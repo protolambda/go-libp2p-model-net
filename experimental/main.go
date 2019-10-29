@@ -7,7 +7,6 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/protolambda/go-libp2p-model-net/mocknet"
 	"log"
-	"sync"
 	"time"
 )
 
@@ -39,6 +38,9 @@ func main() {
 		}
 		chosts[h.ID()] = ch
 	}
+	for _, ch := range chosts {
+		ch.ps.Start(false)
+	}
 	stepDuration := 500 * time.Millisecond
 	timeSinceHeartBeats := time.Duration(0)
 	heartbeatInterval := pubsub.GossipSubHeartbeatInterval
@@ -47,24 +49,33 @@ func main() {
 		// TODO: all at same time?
 		log.Printf("round %d, time: %s", i, env.Now().String())
 		for id, ch := range chosts {
-			workLoop: for {
-				select {
-					case <-ch.workLeft:
-						log.Printf("performed work for %s", id.ShortString())
-				default:
-					log.Printf("completed work for %s", id.ShortString())
-					break workLoop
+			if ch.killed {
+				continue
+			}
+			log.Printf("performing work for %s", id.ShortString())
+			for {
+				free, exit := ch.ps.ProcessNextEvent()
+				if exit {
+					// cleanup if we are exiting
+					ch.ps.Cleanup()
+					ch.killed = true
+					log.Printf("completed all work for %s", id.ShortString())
+				}
+				// if there is no work to do, or if the node is killed, then stop work.
+				if free || exit {
+					break
 				}
 			}
 		}
 		log.Printf("running %s of network traffic", stepDuration.String())
 		env.StepDelta(stepDuration)
+
 		timeSinceHeartBeats += stepDuration
 		if timeSinceHeartBeats >= heartbeatInterval {
 			timeSinceHeartBeats -= heartbeatInterval
 			for id, ch := range chosts {
 				log.Printf("performing gs heartbeat of %s", id.ShortString())
-				ch.heartbeat()
+				ch.gs.Heartbeat()
 			}
 		}
 	}
@@ -73,32 +84,18 @@ func main() {
 
 type ControlledHost struct {
 	h host.Host
-	workLeft <-chan struct{}
-	heartbeat func()
-	psCtx context.Context
-	psEval chan<- func()
+	gs *pubsub.GossipSubRouter
 	ps *pubsub.PubSub
+	killed bool
 }
 
 func initHost(ctx context.Context, env mocknet.Environment, h host.Host) (*ControlledHost, error) {
 	ch := &ControlledHost{h: h}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	hbinit := func(ctx context.Context, eval chan<- func(), heartbeat func()) {
-		ch.psCtx = ctx
-		ch.psEval = eval
-		ch.heartbeat = heartbeat
-		wg.Done()
-	}
-	evControl := func(workLeft <-chan struct{}) {
-		ch.workLeft = workLeft
-		wg.Done()
-	}
-	ps, err := pubsub.NewCustomGossipSub(ctx, h, env, hbinit, pubsub.WithEventControl(evControl))
+	ch.gs = pubsub.NewGossipSub()
+	ps, err := pubsub.NewPubSub(ctx, h, ch.gs, pubsub.WithClock(env))
 	if err != nil {
 		return nil, err
 	}
 	ch.ps = ps
-	wg.Wait()
 	return ch, nil
 }
