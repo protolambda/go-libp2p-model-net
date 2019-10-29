@@ -62,11 +62,13 @@ func (s *stream) Write(p []byte) (n int, err error) {
 	select {
 	case <-s.closed: // bail out if we're closing.
 		return 0, s.writeErr
-	case <-s.env.ScheduleTask(delay):
+	case sa := <-s.env.SynTask(delay):
 		// TODO: instead of scheduling a task for delivery, the message could be buffered,
 		//  and split in two racing tasks: schedule delivery when buffer is full, or when X time has passed
 		// write this message.
-		return s.write.Write(cpy)
+		n, err = s.write.Write(cpy)
+		sa <- TaskAck{}
+		return
 	}
 }
 

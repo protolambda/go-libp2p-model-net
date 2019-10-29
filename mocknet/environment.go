@@ -7,11 +7,23 @@ import (
 	"time"
 )
 
-type Ack struct {}
+type TaskAck struct {}
+type TaskSynAck chan TaskAck
+type TaskSyn chan TaskSynAck
 
+// The scheduler is build around Go channels, and replicates the SYN, SYN-ACK, ACK back and forth between the go routines:
+//
+// task scheduling: sending a SYN
+// the scheduler having started a task: acknowledging a SYN with a SYN-ACK
+// the task starts running: receiving the SYN-ACK
+// the task completes: sends an ACK
+// the scheduler knows a task was completed: an ACK is received
+
+// Task has a time t it should execute at, and a channel to wait for a signal that the task is scheduled
+// (from which the response can be used to communicate back that the task is completed)
 type Task struct {
 	t time.Duration
-	ch chan Ack
+	ch TaskSyn
 }
 
 type NanoClock interface {
@@ -21,7 +33,7 @@ type NanoClock interface {
 
 type Environment interface {
 	NanoClock
-	ScheduleTask(delta time.Duration) (out chan Ack)
+	SynTask(delta time.Duration) (out TaskSyn)
 }
 
 type ModelEnvironment struct {
@@ -37,9 +49,9 @@ func NewModelEnvironment() *ModelEnvironment {
 	}
 }
 
-func (me *ModelEnvironment) ScheduleTask(delta time.Duration) (out chan Ack) {
+func (me *ModelEnvironment) SynTask(delta time.Duration) (out TaskSyn) {
 	me.Lock()
-	out = make(chan Ack)
+	out = make(TaskSyn)
 	task := &Task{t: me.t + delta, ch: out}
 	me.Queue.Push(task, -float32(task.t))
 	me.Unlock()
@@ -67,8 +79,11 @@ func (me *ModelEnvironment) StepDelta(delta time.Duration) {
 			me.Queue.Push(nextTask, -float32(nextTask.t))
 			break
 		}
-		// acknowledge the task
-		nextTask.ch <- struct{}{}
+		sa := make(TaskSynAck)
+		// syn-ack; acknowledge the syn (task scheduling)
+		nextTask.ch <- sa
+		// wait for ack: task complete
+		<- sa
 	}
 	me.t = end
 }
