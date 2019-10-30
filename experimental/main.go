@@ -14,7 +14,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	env := mocknet.NewModelEnvironment()
 	mn := mocknet.NewMocknet(ctx, env)
-	n := 20
+	n := 2
 	for i := 0; i < n; i++ {
 		if _, err := mn.GenPeer(); err != nil {
 			log.Fatalln(err)
@@ -41,13 +41,7 @@ func main() {
 	for _, ch := range chosts {
 		ch.ps.Start(false)
 	}
-	stepDuration := 500 * time.Millisecond
-	timeSinceHeartBeats := time.Duration(0)
-	heartbeatInterval := pubsub.GossipSubHeartbeatInterval
-	for i := 0; i < 100; i++ {
-		// drain all events
-		// TODO: all at same time?
-		log.Printf("round %d, time: %s", i, env.Now().String())
+	processEvents := func() {
 		for id, ch := range chosts {
 			if ch.killed {
 				continue
@@ -67,9 +61,23 @@ func main() {
 				}
 			}
 		}
+	}
+	stepDuration := 500 * time.Millisecond
+	timeSinceHeartBeats := time.Duration(0)
+	heartbeatInterval := pubsub.GossipSubHeartbeatInterval
+	for i := 0; i < 100; i++ {
+		// drain all events
+		// TODO: all at same time?
+		log.Printf("round %d, time: %s", i, env.Now().String())
+
+		// Network traffic
 		log.Printf("running %s of network traffic", stepDuration.String())
 		env.StepDelta(stepDuration)
 
+		// Process messages
+		processEvents()
+
+		// run heartbeats if it's time to do so
 		timeSinceHeartBeats += stepDuration
 		if timeSinceHeartBeats >= heartbeatInterval {
 			timeSinceHeartBeats -= heartbeatInterval
